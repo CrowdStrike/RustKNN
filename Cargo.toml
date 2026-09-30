@@ -1,0 +1,49 @@
+[package]
+name = "rustknn"
+version = "0.1.0"
+edition = "2021"
+authors = ["Amol Khanna", "Edward Raff"]
+description = "Cover trees for exact k-nearest-neighbor search in Rust: three construction variants and three query modes"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/CrowdStrike/RustKNN"
+keywords = ["cover-tree", "nearest-neighbor", "knn", "metric-space"]
+categories = ["algorithms", "data-structures", "science"]
+
+[dependencies]
+# Parallel construction
+rayon = "1.7"
+
+# Stack-allocated small vectors in hot loops (avoids heap allocation)
+smallvec = "1.13"
+
+[dev-dependencies]
+# Random data for examples
+rand = "0.8"
+
+[features]
+# Enable distance computation counting. Off by default: the thread-local Cell
+# increment adds ~5-8ns per distance call.
+instrument = []
+
+# Ablation switches. Each disables one micro-optimization so its effect can be
+# measured in isolation; none of them should be enabled in normal use.
+#
+# Replace halfsort with full sort at all locations.
+no-halfsort = []
+# Use HashMap instead of sorted-Vec + binary_search for ptr_to_input mapping in
+# find_k_nearest_batch.
+hashmap-batch = []
+# Disable distance_with_bound early termination in EuclideanDistance.
+no-early-exit = []
+# Replace SmallVec with Vec in hot query loops.
+no-smallvec = []
+# Disable the k=1 specialization in KnnState, forcing the BinaryHeap path for all k.
+no-k1-special = []
+# Disable triangle-inequality shell pre-filters in query/traversal loops.
+no-triangle-filter = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
