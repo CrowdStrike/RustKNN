@@ -162,9 +162,14 @@ impl RebalanceImpl {
             Self::adjust_subtree_levels(&mut subtree, adjustment);
         }
 
-        // Navigate to attachment parent and attach
+        // Navigate to attachment parent and attach. Every node on the path gains the
+        // subtree as descendants, so widen its maxdist to cover the subtree.
         let mut current = &mut *tree;
         for &idx in &info.path {
+            let reach = metric.distance(&current.point, &subtree.point) + subtree.maxdist;
+            if reach > current.maxdist {
+                current.maxdist = reach;
+            }
             current = &mut *current.children[idx];
         }
 

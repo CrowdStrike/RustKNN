@@ -44,19 +44,6 @@ impl<'a, T: Clone, D: Distance<T>> KnnRules<'a, T, D> {
         }
     }
 
-    /// Create new k-NN rules with simplified per-point bounds.
-    ///
-    /// Uses O(1) kth-distance as the bound instead of recursive B1/B2.
-    /// Avoids cache invalidation and subtree walks. ONLY safe for self-query
-    /// where query=reference tree — NOT safe for batch/external queries.
-    pub fn new_simple_bound(k: usize, metric: &'a D, same_set: bool) -> Self {
-        KnnRules {
-            state: DualKnnState::new(k, BoundMode::SimpleBound),
-            metric,
-            same_set,
-        }
-    }
-
     /// Create new k-NN rules with Beygelzimer bound (kth + maxdist).
     ///
     /// Sound for external queries with lower overhead than CurtinRecursive —

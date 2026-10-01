@@ -45,6 +45,10 @@ pub enum ParallelVariant {
 ///
 /// A SimplifiedCoverTree containing all points
 ///
+/// # Panics
+///
+/// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
+///
 /// # Type Requirements
 ///
 /// - `T: Clone + Send + Sync + 'static` - Points must be thread-safe
@@ -66,7 +70,7 @@ where
     }
 
     // Determine thread count
-    let num_threads = num_threads.unwrap_or_else(|| rayon::current_num_threads());
+    let num_threads = num_threads.unwrap_or_else(rayon::current_num_threads).max(1);
 
     // Calculate chunk size
     let chunk_size = (points.len() + num_threads - 1) / num_threads;
@@ -121,6 +125,10 @@ where
 /// # Returns
 ///
 /// A SimplifiedCoverTree containing all points
+///
+/// # Panics
+///
+/// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
 pub fn build_parallel_simplified<T, D>(
     metric: D,
     base: f64,

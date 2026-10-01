@@ -19,6 +19,14 @@ use crate::node::Node;
 use crate::Distance;
 use std::mem;
 
+/// Largest number of levels `raise_tree_level` will add when aligning trees in a merge.
+///
+/// Each level adds one placeholder node to a chain, and later passes recurse over that
+/// chain. At base 1.3 two root levels can never differ by this much (every finite `f64`
+/// distance maps to a level within about ±2,840), so the limit only applies to data
+/// spanning hundreds of orders of magnitude at bases close to `MIN_BASE`.
+const MAX_MERGE_LEVEL_GAP: i64 = 4096;
+
 /// Implementation of merge operations for SimplifiedCoverTree
 pub struct MergeImpl;
 
@@ -93,10 +101,24 @@ impl MergeImpl {
     /// because they are cloned copies of the original point, created solely for structural purposes
     /// during level alignment. This prevents k-NN queries from returning the same logical point
     /// multiple times.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tree would have to be raised by more than [`MAX_MERGE_LEVEL_GAP`]
+    /// levels, because the resulting chain of placeholder nodes would be deep enough to
+    /// overflow the stack in the recursive passes that follow the merge.
     fn raise_tree_level<T: Clone>(
         mut tree: Box<Node<T>>,
         target_level: i32,
     ) -> Box<Node<T>> {
+        let gap = i64::from(target_level) - i64::from(tree.level);
+        assert!(
+            gap <= MAX_MERGE_LEVEL_GAP,
+            "cannot merge cover trees whose levels differ by {} (limit {}); \
+             the data spans too many orders of magnitude for this base",
+            gap,
+            MAX_MERGE_LEVEL_GAP
+        );
         while tree.level < target_level {
             // Create new node at current level + 1 with the tree as its child
             let new_level = tree.level + 1;
@@ -128,8 +150,9 @@ impl MergeImpl {
         dist: f64,
         base: f64,
     ) -> Box<Node<T>> {
-        // New parent level must be high enough to cover the distance
-        let new_level = Self::dist_to_level_up(dist, base);
+        // New parent level must be high enough to cover the distance. Both callers
+        // reach here only when dist > covdist > 0.
+        let new_level = crate::core::utils::level_for_distance(dist, base);
 
         // Raise both trees to new_level - 1
         let tree1 = Self::raise_tree_level(tree1, new_level - 1);
@@ -183,7 +206,9 @@ impl MergeImpl {
         }
         all_children.extend(leftover_covered);
 
-        // Insert tree2's root as a new child
+        // Insert tree2's root as a new child. If tree2's root is itself a structural
+        // copy (from level alignment), its point already lives in one of its
+        // descendants, so the singleton must stay marked as a duplicate.
         let d_parent = metric.distance(&tree1.point, &tree2.point);
         let tree2_singleton = Box::new(Node {
             point: tree2.point,
@@ -191,7 +216,7 @@ impl MergeImpl {
             d_parent,
             children: vec![],
             level: tree1.level - 1,
-            is_duplicate: false,  // This is tree2's original root point, not a duplicate
+            is_duplicate: tree2.is_duplicate,
         });
         all_children.push(tree2_singleton);
 
@@ -287,14 +312,20 @@ impl MergeImpl {
         result
     }
 
-    /// Flatten a subtree into a vector of points
+    /// Flatten a subtree into a vector of its points.
+    ///
+    /// Structural duplicate nodes are skipped: their point is a copy of a point stored
+    /// in one of their descendants, and re-inserting it would add a second real copy.
     fn flatten_subtree<T: Clone>(node: Box<Node<T>>) -> Vec<T> {
-        let mut points = vec![node.point.clone()];
-
-        for child in node.children {
-            points.extend(Self::flatten_subtree(child));
+        let mut points = Vec::new();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            let n = *n;
+            if !n.is_duplicate {
+                points.push(n.point);
+            }
+            stack.extend(n.children);
         }
-
         points
     }
 
@@ -320,6 +351,22 @@ impl MergeImpl {
             );
         }
 
+        // Exact duplicates of this node's point go into a balanced group of copies
+        // below it (see `DUPLICATE_FANOUT`), so long runs of copies cannot build a
+        // deep chain.
+        if dist == 0.0 {
+            if let Some(i) = crate::core::utils::place_duplicate(&tree, &point, metric) {
+                // Rotate the chosen copy to the back so ties go round-robin.
+                let child = tree.children.remove(i);
+                let child = Self::insert_point_into_tree(child, point, metric, base);
+                tree.children.push(child);
+                return tree;
+            }
+            let level = tree.level - 1;
+            tree.children.push(Box::new(Node::new(point, level, false)));
+            return tree;
+        }
+
         // Try to find a child to recurse into
         for i in 0..tree.children.len() {
             let child_dist = metric.distance(&tree.children[i].point, &point);
@@ -341,15 +388,6 @@ impl MergeImpl {
         tree.maxdist = tree.maxdist.max(dist);
 
         tree
-    }
-
-    /// Calculate the level needed to cover a given distance (ceiling)
-    fn dist_to_level_up(dist: f64, base: f64) -> i32 {
-        if dist <= 0.0 {
-            i32::MIN
-        } else {
-            (dist.log(base)).ceil() as i32
-        }
     }
 }
 

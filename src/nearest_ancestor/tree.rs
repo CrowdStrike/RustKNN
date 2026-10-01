@@ -21,7 +21,12 @@ pub struct NACoverTree<T: Clone, D: Distance<T>> {
 
 impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
     /// Creates a new empty nearest ancestor cover tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
     pub fn new(metric: D, base: f64) -> Self {
+        crate::core::utils::validate_base(base);
         NACoverTree {
             root: None,
             metric,
@@ -328,9 +333,9 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
 
         let root = self.root.as_deref().unwrap();
 
-        // Use SimpleBound + same_set = true for self-query: O(1) bound lookups,
-        // no cache invalidation or subtree walks. parent_bound propagation suffices.
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, true);
+        // Full Curtin B1/B2 bounds: a query node's bound must hold for every query
+        // point below it, not just its own point, even when query = reference.
+        let mut rules = KnnRules::new(k, &self.metric, true);
         rules.state.init_parent_map(root);
         DualTreeTraversal::traverse(root, root, &mut rules);
 

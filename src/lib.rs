@@ -95,7 +95,8 @@
 //! - **k-NN queries**: `find_k_nearest()` and `find_k_nearest_batch()` (dual-tree)
 //! - **Self k-NN**: `find_k_nearest_self()` for all-nearest-neighbors queries
 //! - **Batch single-tree queries**: `find_k_nearest_batch_single_self()` on
-//!   `SimplifiedCoverTree`, and `batch_single_*` methods on `PackedCoverTree`
+//!   `SimplifiedCoverTree` and `PackedCoverTree`, and
+//!   `PackedCoverTree::find_k_nearest_batch_single()` for held-out queries
 //! - **Tree merging**: `merge()` combines two cover trees (Algorithm 4)
 //! - **Parallel construction**: Multi-threaded build via Rayon with binary reduction merge
 //! - **Packed trees**: Cache-optimized depth-first layout via `pack()`
@@ -301,6 +302,7 @@ pub(crate) mod knn;
 
 // Re-export main types for convenient access
 pub use distance::{Distance, EuclideanDistance, ManhattanDistance, reset_distance_count, get_distance_count};
+pub use core::utils::MIN_BASE;
 pub use node::Node;
 pub use node::TreeStats;
 pub use tree::{CoverTree, TreeVariant};

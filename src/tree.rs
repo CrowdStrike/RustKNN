@@ -182,6 +182,10 @@ impl<T: Clone, D: Distance<T>> CoverTree<T, D> {
     ///
     /// A new empty `CoverTree` with Simplified variant.
     ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -216,6 +220,10 @@ impl<T: Clone, D: Distance<T>> CoverTree<T, D> {
     ///
     /// A new empty `CoverTree` with Nearest Ancestor variant.
     ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -242,6 +250,10 @@ impl<T: Clone, D: Distance<T>> CoverTree<T, D> {
     /// * `metric` - The distance function to use
     /// * `base` - The base value for distance calculations
     /// * `variant` - The tree variant to use (Simplified or NearestAncestor)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
     ///
     /// # Examples
     ///
@@ -721,6 +733,8 @@ impl<T: Clone, D: Distance<T>> CoverTree<T, D> {
     ///
     /// * Panics if the two trees have different base values
     /// * Panics if the two trees are different variants (cannot merge Simplified with NearestAncestor)
+    /// * Panics if the trees' levels are too far apart to align safely (see
+    ///   [`SimplifiedCoverTree::merge`])
     ///
     /// # Time Complexity
     ///

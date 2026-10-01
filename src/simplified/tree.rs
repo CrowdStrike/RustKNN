@@ -72,6 +72,10 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     ///
     /// A new empty `SimplifiedCoverTree`.
     ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
+    ///
     /// # Examples
     ///
     /// ```rust,ignore
@@ -89,6 +93,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     /// assert_eq!(tree.len(), 0);
     /// ```
     pub fn new(metric: D, base: f64) -> Self {
+        crate::core::utils::validate_base(base);
         SimplifiedCoverTree {
             root: None,
             metric,
@@ -340,13 +345,13 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     /// The new point becomes the root, so the pointer is to `root.point`.
     fn raise_tree_level_returning_ptr(&mut self, point: T, dist_to_root: f64) -> *const T {
         // Calculate new level needed to accommodate the distance
-        let new_level = (dist_to_root.ln() / self.base.ln()).ceil() as i32;
+        let new_level = crate::core::utils::level_for_distance(dist_to_root, self.base);
 
         // Take ownership of the old root
         let mut old_root = self.root.take().unwrap();
 
         // Adjust old root and all its descendants' levels
-        let level_adjustment = new_level - 1 - old_root.level;
+        let level_adjustment = crate::core::utils::root_level_adjustment(new_level, old_root.level);
         crate::core::utils::adjust_levels(&mut old_root, level_adjustment);
 
         // Create new root with the new point
@@ -460,11 +465,18 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     }
 
     /// Recursive helper for d_parent recomputation.
+    ///
+    /// Also rebuilds `maxdist` bottom-up as `max(child.d_parent + child.maxdist)`, a
+    /// valid (if not tight) bound by the triangle inequality, at no extra distance cost.
+    /// Merging can move subtrees, which leaves the old maxdist values unsound.
     fn recompute_d_parent_recursive(node: &mut Node<T>, metric: &D) {
+        let mut bound = 0.0_f64;
         for child in &mut node.children {
             child.d_parent = metric.distance(&node.point, &child.point);
             Self::recompute_d_parent_recursive(child, metric);
+            bound = bound.max(child.d_parent + child.maxdist);
         }
+        node.maxdist = bound;
     }
 
     /// Sort all children lists by d_parent (ascending) for optimal pruning order.
@@ -584,7 +596,10 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     ///
     /// # Panics
     ///
-    /// Panics if the two trees have different base values.
+    /// Panics if the two trees have different base values, or if their levels are so far
+    /// apart that aligning them would build an excessively deep chain of nodes (only
+    /// possible for data spanning hundreds of orders of magnitude at a base near
+    /// [`MIN_BASE`](crate::MIN_BASE)).
     ///
     /// # Time Complexity
     ///
@@ -1010,9 +1025,9 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
 
         let root = self.root.as_deref().unwrap();
 
-        // Use SimpleBound + same_set = true for self-query: O(1) bound lookups,
-        // no cache invalidation or subtree walks. parent_bound propagation suffices.
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, true);
+        // Full Curtin B1/B2 bounds: a query node's bound must hold for every query
+        // point below it, not just its own point, even when query = reference.
+        let mut rules = KnnRules::new(k, &self.metric, true);
         rules.state.init_parent_map(root);
         DualTreeTraversal::traverse(root, root, &mut rules);
 
@@ -1050,7 +1065,9 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
 
         // Init parent map
         let t0 = Instant::now();
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, true);
+        // Full Curtin B1/B2 bounds: a query node's bound must hold for every query
+        // point below it, not just its own point, even when query = reference.
+        let mut rules = KnnRules::new(k, &self.metric, true);
         rules.state.init_parent_map(root);
         stats.init_parent_map_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -1128,13 +1145,19 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     // Batch single-tree queries
     // ---------------------------------------------------------------------------
 
-    /// Batch single-tree self-query: finds k nearest neighbors for every
-    /// non-duplicate point in this tree (excluding self-matches).
+    /// Batch single-tree all-nearest-neighbors: for every point in the tree, its k
+    /// nearest other points.
     ///
-    /// Walks the query tree hierarchy (same as reference tree) performing
-    /// single-tree reference descent at each scale level. Each query child
-    /// receives an independently filtered copy of the parent's reference
-    /// candidates with recomputed distances.
+    /// Walks the tree as a query tree against itself, performing single-tree
+    /// reference descent at each scale level. Each query child receives an
+    /// independently filtered copy of the parent's reference candidates with
+    /// recomputed distances.
+    ///
+    /// # Returns
+    ///
+    /// One `(pointer to point, neighbors)` pair per point, in no particular order.
+    /// Neighbors are sorted by distance, closest first, and never include the point
+    /// itself (other points at distance zero are included).
     pub fn find_k_nearest_batch_single_self(
         &self,
         k: usize,
@@ -1143,8 +1166,6 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
             Some(r) => r,
             None => return Vec::new(),
         };
-        crate::core::batch_single::batch_single_tree_knn_self(
-            root, k, &self.metric, self.base,
-        )
+        crate::core::batch_single::batch_single_tree_knn_self(root, k, &self.metric)
     }
 }
