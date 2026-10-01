@@ -253,6 +253,10 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
     /// * `points` - Points to insert
     /// * `metric` - Distance metric (must be `Clone` for the intermediate tree)
     /// * `base` - Base value for covdist/sepdist calculations
+    ///
+    /// # Panics
+    ///
+    /// Panics if `base` is not finite or is below [`MIN_BASE`](crate::MIN_BASE).
     pub fn from_incremental(points: Vec<T>, metric: D, base: f64) -> Self
     where
         D: Clone,
@@ -270,6 +274,12 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
     #[allow(dead_code)]
     pub(crate) fn root_index(&self) -> usize {
         self.root_index
+    }
+
+    /// Number of nodes in the packed array (including structural duplicates).
+    #[inline]
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
     }
 
     /// Get a reference to a packed node by index.
@@ -900,7 +910,7 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
             None => return (t_total.elapsed().as_secs_f64() * 1000.0, stats),
         };
         // same_set = false: query and reference are different point sets
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, false);
+        let mut rules = KnnRules::new(k, &self.metric, false);
         rules.state.init_parent_map(query_root);
         stats.init_parent_map_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
@@ -1003,9 +1013,10 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
             return Vec::new();
         }
 
-        // Use SimpleBound for self-query: O(1) bound lookups, no cache invalidation
+        // Full Curtin B1/B2 bounds: a query node's bound must hold for every query
+        // point below it, not just its own point, even when query = reference.
         // same_set=true so each point skips itself as a neighbor candidate
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, true);
+        let mut rules = KnnRules::new(k, &self.metric, true);
         rules.state.init_parent_map_packed(self, self.root_index);
         FullyPackedDualTreeTraversal::traverse(self, 0, self.root_index, &mut rules);
 
@@ -1044,8 +1055,10 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
 
         // Phase 2: Init parent map (walks packed array by index)
         let t2 = Instant::now();
+        // Full Curtin B1/B2 bounds: a query node's bound must hold for every query
+        // point below it, not just its own point, even when query = reference.
         // same_set=true so each point skips itself as a neighbor candidate
-        let mut rules = KnnRules::new_simple_bound(k, &self.metric, true);
+        let mut rules = KnnRules::new(k, &self.metric, true);
         rules.state.init_parent_map_packed(self, self.root_index);
         stats.init_parent_map_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
@@ -1105,58 +1118,108 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
     }
 
     // ---------------------------------------------------------------------------
-    // Batch single-tree queries (instrumented)
+    // Batch single-tree queries
     // ---------------------------------------------------------------------------
 
-    /// Batch single-tree self-query (instrumented): walks the query tree
-    /// hierarchy (same as reference tree) performing single-tree reference
-    /// descent. Returns (elapsed_ms, distance_computations).
-    pub fn batch_single_self_query_instrumented(
-        &self,
-        k: usize,
-    ) -> (f64, u64)
+    /// Batch single-tree all-nearest-neighbors: for every point in the tree, its k
+    /// nearest other points.
+    ///
+    /// Walks the tree as a query tree against itself, performing single-tree
+    /// reference descent at each scale level; each query child receives an
+    /// independently filtered copy of its parent's reference candidates.
+    ///
+    /// # Returns
+    ///
+    /// One `(point, neighbors)` pair per point, in no particular order. Neighbors are
+    /// sorted by distance, closest first, and never include the point itself
+    /// (other points at distance zero are included).
+    pub fn find_k_nearest_batch_single_self(&self, k: usize) -> Vec<(&T, Vec<(&T, f64)>)> {
+        crate::core::batch_single::batch_single_tree_knn_packed_self(self, k)
+            .into_iter()
+            .map(|(idx, row)| (&self.node(idx).point, row))
+            .collect()
+    }
+
+    /// Batch single-tree k-NN for held-out query points.
+    ///
+    /// Builds a cover tree over `queries` and walks it against this tree, performing
+    /// single-tree reference descent at each scale level.
+    ///
+    /// # Returns
+    ///
+    /// One entry per input query (in the same order as `queries`), each containing up
+    /// to k neighbors sorted by distance, closest first.
+    pub fn find_k_nearest_batch_single(&self, queries: &[T], k: usize) -> Vec<Vec<(&T, f64)>>
     where
         D: Clone,
     {
+        let mut output: Vec<Vec<(&T, f64)>> = vec![Vec::new(); queries.len()];
+        if k == 0 || queries.is_empty() || self.nodes.is_empty() {
+            return output;
+        }
+        let (query_tree, ptr_to_input) = self.build_query_tree(queries);
+        let Some(query_root) = query_tree.root_node() else {
+            return output;
+        };
+        let rows = crate::core::batch_single::batch_single_tree_knn_packed(query_root, self, k);
+        for (ptr, row) in rows {
+            if let Ok(pos) = ptr_to_input.binary_search_by_key(&(ptr as usize), |&(p, _)| p as usize) {
+                for &qi in &ptr_to_input[pos].1 {
+                    output[qi] = row.clone();
+                }
+            }
+        }
+        output
+    }
+
+    /// Builds a cover tree over `queries`, returning it with a map from each tree
+    /// point's address to the input indices that produced it (sorted by address).
+    #[allow(clippy::type_complexity)]
+    fn build_query_tree(
+        &self,
+        queries: &[T],
+    ) -> (crate::simplified::SimplifiedCoverTree<T, D>, Vec<(*const T, Vec<usize>)>)
+    where
+        D: Clone,
+    {
+        let mut query_tree = crate::simplified::SimplifiedCoverTree::new(self.metric.clone(), self.base);
+        let mut ptr_to_input: Vec<(*const T, Vec<usize>)> = Vec::with_capacity(queries.len());
+        for (qi, q) in queries.iter().enumerate() {
+            let ptr = query_tree.insert_returning_ptr(q.clone());
+            match ptr_to_input.binary_search_by_key(&(ptr as usize), |&(p, _)| p as usize) {
+                Ok(pos) => ptr_to_input[pos].1.push(qi),
+                Err(pos) => ptr_to_input.insert(pos, (ptr, vec![qi])),
+            }
+        }
+        query_tree.recompute_all();
+        (query_tree, ptr_to_input)
+    }
+
+    /// Batch single-tree self-query (instrumented): runs
+    /// [`find_k_nearest_batch_single_self`](Self::find_k_nearest_batch_single_self)
+    /// and returns (elapsed_ms, distance_computations). Distance computations are
+    /// only counted with the `instrument` feature.
+    pub fn batch_single_self_query_instrumented(&self, k: usize) -> (f64, u64) {
         use std::time::Instant;
         use crate::distance::{reset_distance_count, get_distance_count};
 
         if k == 0 || self.nodes.is_empty() {
             return (0.0, 0);
         }
-
-        // Unpack packed tree to Node<T> tree in O(n) via DFS structure copy
-        let query_root = match self.unpack_to_node_tree() {
-            Some(root) => root,
-            None => return (0.0, 0),
-        };
-
-        // Run batch single-tree with packed reference (self-query variant)
         reset_distance_count();
         let t0 = Instant::now();
-        let _results = crate::core::batch_single::batch_single_tree_knn_packed_self(
-            &query_root,
-            self,
-            self.root_index,
-            k,
-            &self.metric,
-            self.base,
-        );
+        let results = crate::core::batch_single::batch_single_tree_knn_packed_self(self, k);
         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let dist_count = get_distance_count();
-
+        drop(results);
         (elapsed_ms, dist_count)
     }
 
-    /// Batch single-tree held-out query (instrumented): builds a query tree
-    /// from the given query points, then uses batch single-tree traversal
-    /// against this packed reference tree.
-    /// Returns (elapsed_ms, distance_computations).
-    pub fn batch_single_batch_query_instrumented(
-        &self,
-        queries: &[T],
-        k: usize,
-    ) -> (f64, u64)
+    /// Batch single-tree held-out query (instrumented): builds a query tree from the
+    /// given query points (not timed), then runs the batch single-tree search against
+    /// this tree. Returns (elapsed_ms, distance_computations). Distance computations
+    /// are only counted with the `instrument` feature.
+    pub fn batch_single_batch_query_instrumented(&self, queries: &[T], k: usize) -> (f64, u64)
     where
         D: Clone,
     {
@@ -1166,36 +1229,16 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
         if k == 0 || queries.is_empty() || self.nodes.is_empty() {
             return (0.0, 0);
         }
-
-        // Build query tree from query points
-        let mut query_tree = crate::simplified::SimplifiedCoverTree::new(
-            self.metric.clone(),
-            self.base,
-        );
-        for q in queries {
-            query_tree.insert(q.clone());
-        }
-        query_tree.recompute_all();
-
-        let query_root = match query_tree.root_node() {
-            Some(r) => r,
-            None => return (0.0, 0),
+        let (query_tree, _) = self.build_query_tree(queries);
+        let Some(query_root) = query_tree.root_node() else {
+            return (0.0, 0);
         };
-
-        // Run batch single-tree
         reset_distance_count();
         let t0 = Instant::now();
-        let _results = crate::core::batch_single::batch_single_tree_knn_packed(
-            query_root,
-            self,
-            self.root_index,
-            k,
-            &self.metric,
-            self.base,
-        );
+        let results = crate::core::batch_single::batch_single_tree_knn_packed(query_root, self, k);
         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let dist_count = get_distance_count();
-
+        drop(results);
         (elapsed_ms, dist_count)
     }
 }

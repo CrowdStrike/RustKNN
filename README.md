@@ -116,7 +116,7 @@ mode:
 |---|---|
 | Single-tree | `find_nearest`, `find_k_nearest` (loop over queries) |
 | Dual-tree | `find_k_nearest_batch` (held-out queries), `find_k_nearest_self` (all-NN) |
-| Batch single-tree | `SimplifiedCoverTree::find_k_nearest_batch_single_self` (all-NN). `PackedCoverTree` has timing-only `batch_single_*_instrumented` methods. |
+| Batch single-tree | `find_k_nearest_batch_single_self` (all-NN, on `SimplifiedCoverTree` and `PackedCoverTree`), `PackedCoverTree::find_k_nearest_batch_single` (held-out queries) |
 
 ## Cargo features
 

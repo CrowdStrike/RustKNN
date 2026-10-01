@@ -41,19 +41,20 @@ use crate::distance::Distance;
 /// Controls how pruning bounds are computed during dual-tree traversal.
 ///
 /// The full Curtin et al. B1/B2 bound computation walks entire subtrees on cache miss
-/// and invalidates ancestor chains on every improvement. For self-query (same tree as
-/// both query and reference), this overhead dominates — a simpler per-point bound
-/// suffices because the `parent_bound` parameter already propagates the tightest
-/// ancestor bound downward through recursion.
+/// and invalidates ancestor chains on every improvement. All exact queries use
+/// `CurtinRecursive`; the other modes exist for comparing bound costs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundMode {
     /// Full B1/B2 recursive bound with cache invalidation (Curtin et al.).
     /// Use for general dual-tree queries where query ≠ reference.
     CurtinRecursive,
     /// Per-point kth-distance only, O(1). No cache allocation, no invalidation.
-    /// Use ONLY for self-query where query=reference tree. NOT safe for batch/external
-    /// queries — missing the λ(Nq) margin needed to account for descendant query
-    /// points with worse kth-distances (see Curtin et al. Section 5, B2 bound).
+    ///
+    /// **Not exact**: it bounds a whole query subtree by its root point's
+    /// kth-distance, omitting the λ(Nq) margin needed for descendant query points
+    /// with worse kth-distances (see Curtin et al. Section 5, B2 bound). That is
+    /// unsound for self-queries as well as external ones, so it can miss neighbors.
+    /// Kept only for measuring bound overhead.
     SimpleBound,
     /// Beygelzimer bound: kth_distance(center) + maxdist(Nq). Sound for external
     /// queries with lower overhead than CurtinRecursive — no bound cache needed,

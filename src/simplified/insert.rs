@@ -59,6 +59,25 @@ impl InsertImpl {
         // Calculate distance from parent to point (we'll need it)
         let dist = metric.distance(&parent.point, &point);
 
+        // Exact duplicates of this node's point go into a balanced group of copies
+        // below it (see `DUPLICATE_FANOUT`). Ordinary descent would put every further
+        // copy one level deeper, and a long run of copies would make the tree deep
+        // enough for recursive operations to overflow the stack.
+        if dist == 0.0 {
+            if let Some(i) = crate::core::utils::place_duplicate(parent, &point, metric) {
+                let ptr = Self::insert_recursive_returning_ptr(&mut parent.children[i], point, metric, base);
+                // Rotate the chosen copy to the back so ties go round-robin and the
+                // group fills evenly. Boxed nodes don't move, so `ptr` stays valid.
+                let chosen = parent.children.remove(i);
+                parent.children.push(chosen);
+                return ptr;
+            }
+            let mut duplicate = Node::new(point, parent.level - 1, false);
+            duplicate.d_parent = 0.0;
+            parent.children.push(Box::new(duplicate));
+            return &parent.children.last().unwrap().point;
+        }
+
         // Find first child that can accommodate this point
         // A child can accommodate if d(child, point) <= covdist(child)
         let mut found: Option<(usize, f64)> = None;
@@ -71,10 +90,13 @@ impl InsertImpl {
             }
         }
 
-        if let Some((chosen_idx, chosen_dist)) = found {
+        if let Some((chosen_idx, _)) = found {
             let ptr = Self::insert_recursive_returning_ptr(&mut parent.children[chosen_idx], point, metric, base);
-            let child_maxdist = parent.children[chosen_idx].maxdist;
-            parent.update_maxdist_approx(chosen_dist, child_maxdist);
+            // The new point is now a descendant of `parent`; its distance to the parent
+            // was computed above, so maxdist stays a valid bound on all descendants.
+            if dist > parent.maxdist {
+                parent.maxdist = dist;
+            }
             return ptr;
         }
 

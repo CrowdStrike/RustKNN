@@ -56,6 +56,14 @@ pub(crate) struct KnnState<'a, T> {
     backing: KnnBacking<'a, T>,
 }
 
+/// Upper bound on the capacity reserved up front for the k>1 candidate list.
+///
+/// `k` comes from the caller and may be far larger than the number of points that
+/// can ever be found, so reserving `k` slots eagerly can request an impossible
+/// allocation. Above this bound the list grows only as candidates are inserted,
+/// which is bounded by the number of reference points.
+const MAX_PREALLOCATED_NEIGHBORS: usize = 64;
+
 impl<'a, T> KnnState<'a, T> {
     /// Create a new k-NN state for tracking up to k neighbors.
     pub fn new(k: usize) -> Self {
@@ -70,7 +78,7 @@ impl<'a, T> KnnState<'a, T> {
         }
         KnnState {
             backing: KnnBacking::Sorted {
-                entries: Vec::with_capacity(k),
+                entries: Vec::with_capacity(k.min(MAX_PREALLOCATED_NEIGHBORS)),
                 k,
             },
         }
@@ -88,8 +96,9 @@ impl<'a, T> KnnState<'a, T> {
                 if entries.len() < *k {
                     f64::INFINITY
                 } else {
-                    // Worst is at the end (sorted ascending)
-                    entries.last().unwrap().0
+                    // Worst is at the end (sorted ascending). With k == 0 the list is
+                    // always empty and nothing can be accepted.
+                    entries.last().map_or(f64::NEG_INFINITY, |e| e.0)
                 }
             }
         }
@@ -118,7 +127,7 @@ impl<'a, T> KnnState<'a, T> {
                     entries.insert(pos, (distance, point));
                     // kth_distance changed from INFINITY to a real value when we fill up
                     entries.len() == *k
-                } else if distance < entries.last().unwrap().0 {
+                } else if entries.last().is_some_and(|worst| distance < worst.0) {
                     // Better than current worst: binary search for insertion position,
                     // insert there, and pop the last (worst) entry.
                     // This is O(k) due to the shift, but operates on contiguous memory.
