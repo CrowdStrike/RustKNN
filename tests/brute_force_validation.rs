@@ -79,10 +79,18 @@ fn builders(pts: &[P], base: f64) -> Vec<(&'static str, SimplifiedCoverTree<P, E
         na.insert(p.clone());
     }
     let (a, b) = pts.split_at(pts.len() / 3);
+    let insert_na = |ps: &[P]| {
+        let mut t = NACoverTree::new(EuclideanDistance, base);
+        for p in ps {
+            t.insert(p.clone());
+        }
+        t
+    };
     vec![
         ("insert", insert(pts)),
         ("nearest-ancestor", na.into_simplified()),
         ("merge", insert(a).merge(insert(b))),
+        ("na-merge", insert_na(a).merge(insert_na(b))),
         ("parallel", build_parallel(EuclideanDistance, base, pts.to_vec(), Some(5), ParallelVariant::Simplified)),
         ("parallel-na", build_parallel(EuclideanDistance, base, pts.to_vec(), Some(5), ParallelVariant::NearestAncestor)),
     ]

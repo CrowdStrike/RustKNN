@@ -16,6 +16,11 @@ use std::cell::Cell;
 /// stack. Typical data stays well inside the budget: in release builds, the deepest tree
 /// in the paper's benchmark datasets (153 levels) runs every query mode in under half
 /// of it. Debug builds have larger stack frames and reach the limit sooner.
+///
+/// The budget protects only threads with more than this much free stack when the call
+/// is made. Run deep-tree workloads on a thread with at least 2 MiB of stack: a 1 MiB
+/// thread (the main thread on Windows, or a thread or Rayon pool configured with a small
+/// stack) can still overflow before the budget is reached.
 pub const RECURSION_STACK_BUDGET: usize = 1 << 20;
 
 thread_local! {
