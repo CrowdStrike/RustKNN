@@ -32,6 +32,7 @@ impl RebalanceImpl {
         metric: &D,
         base: f64
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut parent_node = *parent;
 
         // Step 1: TAKE ownership of children
@@ -95,6 +96,7 @@ impl RebalanceImpl {
         metric: &D,
         base: f64,
     ) -> Option<AttachmentInfo> {
+        let _guard = crate::core::utils::StackGuard::enter();
         let dist = metric.distance(&tree.point, point);
 
         // Can't cover at this level - no valid attachment
@@ -183,10 +185,8 @@ impl RebalanceImpl {
 
     /// Adjusts all levels in a subtree by a given amount.
     fn adjust_subtree_levels<T: Clone>(node: &mut Node<T>, adjustment: i32) {
-        node.level += adjustment;
-        for child in &mut node.children {
-            Self::adjust_subtree_levels(child, adjustment);
-        }
+        // Iterative (shared helper), so a deep subtree is never left half-adjusted.
+        crate::core::utils::adjust_levels(node, adjustment);
     }
 
     /// Falls back to flattening subtree and reinserting points individually.
@@ -239,6 +239,7 @@ impl RebalanceImpl {
         new_point: &T,
         metric: &D
     ) -> (Option<Box<Node<T>>>, Vec<Box<Node<T>>>) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let dist_to_root = metric.distance(&current.point, root_point);
         let dist_to_new = metric.distance(&current.point, new_point);
 
@@ -277,17 +278,16 @@ impl RebalanceImpl {
         (Some(Box::new(node)), extracted_subtrees)
     }
 
-    /// Flattens an entire subtree to a vector of points (for fallback).
+    /// Flattens an entire subtree to a vector of points (for fallback). Iterative, so a
+    /// deep subtree cannot overflow the stack or be lost halfway.
     fn flatten_to_points_owned<T: Clone>(node: Box<Node<T>>) -> Vec<T> {
-        let mut node = *node;
-        let mut points = vec![node.point];
-
-        let children = std::mem::take(&mut node.children);
-
-        for child in children {
-            points.extend(Self::flatten_to_points_owned(child));
+        let mut points = Vec::new();
+        let mut stack = vec![node];
+        while let Some(mut n) = stack.pop() {
+            points.push(n.point.clone());
+            // Reverse so children are visited in order (pre-order, as before).
+            stack.extend(std::mem::take(&mut n.children).into_iter().rev());
         }
-
         points
     }
 }

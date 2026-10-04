@@ -99,6 +99,7 @@ impl<D: Distance<Vec<f64>>> KdTree<D> {
         dim: usize,
         nodes: &mut Vec<KdNode>,
     ) -> usize {
+        let _guard = crate::core::utils::StackGuard::enter();
         if lo >= hi {
             return NONE;
         }
@@ -186,6 +187,7 @@ impl<D: Distance<Vec<f64>>> KdTree<D> {
 
     /// Recursive nearest-neighbor descent with box pruning.
     fn search<'a>(&'a self, node_idx: usize, query: &Vec<f64>, state: &mut KnnState<'a, Vec<f64>>) {
+        let _guard = crate::core::utils::StackGuard::enter();
         if node_idx == NONE {
             return;
         }
@@ -232,6 +234,7 @@ mod tests {
     use crate::distance::EuclideanDistance;
 
     fn brute_force(points: &[Vec<f64>], query: &[f64], k: usize) -> Vec<f64> {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut ds: Vec<f64> = points
             .iter()
             .map(|p| {

@@ -59,6 +59,7 @@ impl InsertImpl {
         metric: &D,
         base: f64
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Exact duplicates of this node's point go into a balanced group of copies
         // below it (see `DUPLICATE_FANOUT`). Ordinary descent would put every further
         // copy one level deeper, and a long run of copies would make the tree deep

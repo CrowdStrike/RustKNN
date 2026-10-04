@@ -302,7 +302,7 @@ pub(crate) mod knn;
 
 // Re-export main types for convenient access
 pub use distance::{Distance, EuclideanDistance, ManhattanDistance, reset_distance_count, get_distance_count};
-pub use core::utils::MIN_BASE;
+pub use core::utils::{MIN_BASE, RECURSION_STACK_BUDGET};
 pub use node::Node;
 pub use node::TreeStats;
 pub use tree::{CoverTree, TreeVariant};

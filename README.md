@@ -118,6 +118,23 @@ mode:
 | Dual-tree | `find_k_nearest_batch` (held-out queries), `find_k_nearest_self` (all-NN) |
 | Batch single-tree | `find_k_nearest_batch_single_self` (all-NN, on `SimplifiedCoverTree` and `PackedCoverTree`), `PackedCoverTree::find_k_nearest_batch_single` (held-out queries) |
 
+## Input limits
+
+These limits turn inputs that would otherwise hang or crash the process into ordinary
+(catchable) panics:
+
+- **Base:** every constructor requires a finite base of at least `rustknn::MIN_BASE`
+  (1.1). The default, 1.3, is the usual choice.
+- **Tree depth:** recursive operations (queries, construction, merging, packing) may use
+  at most `rustknn::RECURSION_STACK_BUDGET` (1 MiB) of stack per thread, and panic beyond
+  it rather than overflowing the stack. Only data spanning hundreds of orders of magnitude
+  gets close: in release builds, the deepest tree in the paper's benchmark datasets (covtype
+  built in parallel at base 1.1, 153 levels) runs every query mode in under half the
+  budget. Debug builds have larger stack frames, so they reach the limit sooner.
+  If a nearest-ancestor insert hits the limit, the tree is left empty.
+- **`k`:** any `k` is accepted, including `usize::MAX`. Memory grows with the number of
+  neighbors actually found, not with `k`.
+
 ## Cargo features
 
 All features are off by default.

@@ -104,7 +104,10 @@ fn halfsort<T>(slice: &mut [T], cmp: impl Fn(&T, &T) -> std::cmp::Ordering) {
 /// (Unlike PackedDualTree, unpacked traversal accesses rc.maxdist directly.)
 #[derive(Clone, Copy)]
 struct RefChildData {
-    d_qp_rc: f64,   // distance from query point to this ref child
+    /// d(query point, this ref child) if `qp_rc_exact`; otherwise only a lower bound
+    /// (the early-exit threshold the true distance exceeded).
+    d_qp_rc: f64,
+    qp_rc_exact: bool,
     d_rp_rc: f64,    // distance from ref parent to this ref child (d_parent)
 }
 
@@ -112,7 +115,9 @@ struct RefChildData {
 /// Consolidates two parallel arrays into one for better locality.
 #[derive(Clone, Copy)]
 struct QueryChildData {
-    d_qc_rp: f64,   // distance from this query child to ref parent
+    /// d(this query child, ref parent) if `qc_rp_exact`; otherwise only a lower bound.
+    d_qc_rp: f64,
+    qc_rp_exact: bool,
     d_qp_qc: f64,   // distance from query parent to this query child (d_parent)
 }
 
@@ -151,6 +156,7 @@ impl DualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Step 1: Base case using pre-resolved index (no HashMap)
         let bound = rules.state.bound_with_idx(q_idx).min(parent_bound);
         let dist = match precomputed_dist {
@@ -161,7 +167,11 @@ impl DualTreeTraversal {
             None => {
                 let ub = bound + query_node.maxdist + ref_node.maxdist;
                 let d = rules.metric.distance_with_bound(&query_node.point, &ref_node.point, ub);
-                rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                }
                 d
             }
         };
@@ -289,14 +299,17 @@ impl DualTreeTraversal {
                 let qp_kth = rules.kth_distance_by_idx(q_idx);
                 for (i, rc) in r_children.iter().enumerate() {
                     // Self-child optimization: reuse parent distance when d_parent == 0.0
-                    let d = if rc.d_parent == 0.0 {
-                        dist // d(qp, rp) == d(qp, rc) for self-child
+                    // (`dist` is exact: an early-exited pair would have been pruned).
+                    let (d, exact, lower) = if rc.d_parent == 0.0 {
+                        (dist, true, dist) // d(qp, rp) == d(qp, rc) for self-child
                     } else {
                         let ub = qp_kth + rc.maxdist;
-                        rules.metric.distance_with_bound(&query_node.point, &rc.point, ub)
+                        let d = rules.metric.distance_with_bound(&query_node.point, &rc.point, ub);
+                        (d, d <= ub, if d <= ub { d } else { ub })
                     };
                     ref_data.push(RefChildData {
-                        d_qp_rc: d,
+                        d_qp_rc: lower,
+                        qp_rc_exact: exact,
                         d_rp_rc: rc.d_parent,
                     });
                     let child_dmin = d - rc.maxdist;
@@ -330,14 +343,16 @@ impl DualTreeTraversal {
                 let mut query_scored: ScoredVec = ScoredVec::new();
                 for (i, qc) in q_children.iter().enumerate() {
                     // Self-child optimization: reuse parent distance when d_parent == 0.0
-                    let d = if qc.d_parent == 0.0 {
-                        dist // d(qp, rp) == d(qc, rp) for self-child
+                    let (d, exact, lower) = if qc.d_parent == 0.0 {
+                        (dist, true, dist) // d(qp, rp) == d(qc, rp) for self-child
                     } else {
                         let ub = qc_bounds[i] + qc.maxdist;
-                        rules.metric.distance_with_bound(&qc.point, &ref_node.point, ub)
+                        let d = rules.metric.distance_with_bound(&qc.point, &ref_node.point, ub);
+                        (d, d <= ub, if d <= ub { d } else { ub })
                     };
                     query_data.push(QueryChildData {
-                        d_qc_rp: d,
+                        d_qc_rp: lower,
+                        qc_rp_exact: exact,
                         d_qp_qc: qc.d_parent,
                     });
                     let child_dmin = d - qc.maxdist;
@@ -376,9 +391,15 @@ impl DualTreeTraversal {
                 for (qi, qc) in q_children.iter().enumerate() {
                     let qc_bound = qc_bounds[qi];
                     for (ri, rc) in r_children.iter().enumerate() {
-                        // Triangle inequality lower bounds (avoid expensive metric call)
+                        // Triangle inequality lower bounds (avoid expensive metric call).
+                        // lb1 needs d(qp, rc) exactly; lb2 only needs a lower bound on
+                        // d(qc, rp), which the stored value always is.
                         if cfg!(not(feature = "no-triangle-filter")) {
-                            let lb1 = (query_data[qi].d_qp_qc - ref_data[ri].d_qp_rc).max(0.0); // pivot = qp
+                            let lb1 = if ref_data[ri].qp_rc_exact {
+                                (query_data[qi].d_qp_qc - ref_data[ri].d_qp_rc).max(0.0) // pivot = qp
+                            } else {
+                                0.0
+                            };
                             let lb2 = (query_data[qi].d_qc_rp - ref_data[ri].d_rp_rc).max(0.0); // pivot = rp
                             let lb = lb1.max(lb2);
                             let lb_dmin = lb - qc.maxdist - rc.maxdist;
@@ -388,14 +409,27 @@ impl DualTreeTraversal {
                         }
 
                         // Self-child optimization: if rc is a self-child, d(qc, rc) == d(qc, rp);
-                        // if qc is a self-child, d(qc, rc) == d(qp, rc). Both already computed.
-                        let d = if rc.d_parent == 0.0 {
-                            query_data[qi].d_qc_rp
+                        // if qc is a self-child, d(qc, rc) == d(qp, rc). Reuse them when
+                        // exact; an early-exited value is only a lower bound, so prune on
+                        // it or compute the distance.
+                        let reuse = if rc.d_parent == 0.0 {
+                            Some((query_data[qi].d_qc_rp, query_data[qi].qc_rp_exact))
                         } else if qc.d_parent == 0.0 {
-                            ref_data[ri].d_qp_rc
+                            Some((ref_data[ri].d_qp_rc, ref_data[ri].qp_rc_exact))
                         } else {
-                            let ub = qc_bound + qc.maxdist + rc.maxdist;
-                            rules.metric.distance_with_bound(&qc.point, &rc.point, ub)
+                            None
+                        };
+                        let d = match reuse {
+                            Some((d, true)) => d,
+                            Some((lower, false)) if lower - qc.maxdist - rc.maxdist > qc_bound => continue,
+                            _ => {
+                                let ub = qc_bound + qc.maxdist + rc.maxdist;
+                                let d = rules.metric.distance_with_bound(&qc.point, &rc.point, ub);
+                                if d > ub {
+                                    continue; // early exit: the pair is pruned
+                                }
+                                d
+                            }
                         };
                         let pair_dmin = d - qc.maxdist - rc.maxdist;
                         if pair_dmin <= qc_bound {
@@ -435,6 +469,7 @@ impl DualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let kth = rules.kth_distance_by_idx(q_idx);
         let dist = match precomputed_dist {
             Some(d) => {
@@ -444,7 +479,11 @@ impl DualTreeTraversal {
             None => {
                 let ub = kth + ref_node.maxdist;
                 let d = rules.metric.distance_with_bound(query_point, &ref_node.point, ub);
-                rules.base_case_by_idx(query_point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(query_point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                }
                 d
             }
         };
@@ -504,6 +543,7 @@ impl DualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let bound = rules.state.bound_with_idx(q_idx).min(parent_bound);
         let dist = match precomputed_dist {
             Some(d) => {
@@ -513,7 +553,11 @@ impl DualTreeTraversal {
             None => {
                 let ub = bound + query_node.maxdist;
                 let d = rules.metric.distance_with_bound(&query_node.point, ref_point, ub);
-                rules.base_case_by_idx(&query_node.point, q_idx, ref_point, ref_is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(&query_node.point, q_idx, ref_point, ref_is_duplicate, d);
+                }
                 d
             }
         };

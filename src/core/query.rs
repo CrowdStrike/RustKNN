@@ -59,6 +59,7 @@ where
     T: Clone,
     D: Distance<T>,
 {
+    let _guard = crate::core::utils::StackGuard::enter();
     // Check if current node is closer than best
     let node_dist = metric.distance(&node.point, query);
     let (mut current_best, mut current_dist) = if node_dist < best_dist {

@@ -100,6 +100,7 @@ impl PackImpl {
         packed: &mut Vec<PackedNode<T>>,
         child_indices: &mut Vec<usize>,
     ) -> usize {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Compute d_parent: distance from parent's point to this node's point
         let d_parent = match parent_point {
             Some(pp) => metric.distance(pp, &node.point),

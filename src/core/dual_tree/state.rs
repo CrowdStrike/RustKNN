@@ -41,21 +41,13 @@ use crate::distance::Distance;
 /// Controls how pruning bounds are computed during dual-tree traversal.
 ///
 /// The full Curtin et al. B1/B2 bound computation walks entire subtrees on cache miss
-/// and invalidates ancestor chains on every improvement. All exact queries use
-/// `CurtinRecursive`; the other modes exist for comparing bound costs.
+/// and invalidates ancestor chains on every improvement. Both modes give exact results;
+/// `Beygelzimer` trades looser pruning for cheaper bound computation.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundMode {
     /// Full B1/B2 recursive bound with cache invalidation (Curtin et al.).
     /// Use for general dual-tree queries where query ≠ reference.
     CurtinRecursive,
-    /// Per-point kth-distance only, O(1). No cache allocation, no invalidation.
-    ///
-    /// **Not exact**: it bounds a whole query subtree by its root point's
-    /// kth-distance, omitting the λ(Nq) margin needed for descendant query points
-    /// with worse kth-distances (see Curtin et al. Section 5, B2 bound). That is
-    /// unsound for self-queries as well as external ones, so it can miss neighbors.
-    /// Kept only for measuring bound overhead.
-    SimpleBound,
     /// Beygelzimer bound: kth_distance(center) + maxdist(Nq). Sound for external
     /// queries with lower overhead than CurtinRecursive — no bound cache needed,
     /// no cache invalidation, no subtree walks. Less tight than full B1/B2
@@ -147,6 +139,7 @@ impl<'a, T: Clone> DualKnnState<'a, T> {
 
     /// Count the total number of nodes in a tree rooted at `node`.
     fn count_nodes(node: &Node<T>) -> usize {
+        let _guard = crate::core::utils::StackGuard::enter();
         1 + node.children.iter().map(|c| Self::count_nodes(c)).sum::<usize>()
     }
 
@@ -272,6 +265,7 @@ impl<'a, T: Clone> DualKnnState<'a, T> {
     /// Recursive helper to build the point/node index, parent map, children indices,
     /// maxdist cache, and query_ptrs.
     fn build_parent_map_recursive(&mut self, node: &Node<T>, parent_idx: Option<usize>) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let point_ptr = &node.point as *const T;
 
         // Assign the same index for both node and point (1:1 in simplified cover trees)
@@ -322,15 +316,10 @@ impl<'a, T: Clone> DualKnnState<'a, T> {
 
     /// Compute the pruning bound B(Nq) using a pre-resolved node index.
     ///
-    /// In `SimpleBound` mode: returns `kth_distance(idx)` directly — O(1), no cache.
     /// In `Beygelzimer` mode: returns `kth_distance(idx) + maxdist(idx)` — O(1), no cache.
     /// In `CurtinRecursive` mode: full B1/B2 with caching and subtree walks.
     #[inline]
     pub fn bound_with_idx(&mut self, idx: usize) -> f64 {
-        if self.bound_mode == BoundMode::SimpleBound {
-            return self.states[idx].kth_distance();
-        }
-
         if self.bound_mode == BoundMode::Beygelzimer {
             // B2 = kth_distance(center) + λ(Nq) where λ(Nq) = maxdist(Nq)
             // Sound for external queries: any descendant qd is at most maxdist from
@@ -391,6 +380,7 @@ impl<'a, T: Clone> DualKnnState<'a, T> {
     /// Curtin et al.'s tighter bound that accounts for the distance from each descendant
     /// to the node center. B2 >= B1 always (since d(q, center) >= 0).
     fn compute_bounds_recursive(&mut self, idx: usize) -> (f64, f64) {
+        let _guard = crate::core::utils::StackGuard::enter();
         if let Some(cached) = self.bound_cache[idx] {
             if cached.epoch == self.epoch {
                 return (cached.first_bound, cached.second_bound);

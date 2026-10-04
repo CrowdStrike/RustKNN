@@ -51,6 +51,7 @@ impl MergeImpl {
         metric: &D,
         base: f64,
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Step 1: Align levels (raise lower tree to match higher)
         let (tree1, tree2) = Self::align_levels(tree1, tree2);
 
@@ -182,12 +183,14 @@ impl MergeImpl {
     /// This is the core merge logic following Algorithm 4
     fn merge_into<T: Clone, D: Distance<T>>(
         mut tree1: Box<Node<T>>,
-        tree2: Box<Node<T>>,
+        mut tree2: Box<Node<T>>,
         metric: &D,
         base: f64,
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Step 1: Partition tree2's children into covered/not-covered by tree1
-        let (covered, not_covered) = Self::partition_children(&tree1, tree2.children, metric, base);
+        let tree2_children = mem::take(&mut tree2.children);
+        let (covered, not_covered) = Self::partition_children(&tree1, tree2_children, metric, base);
 
         // Step 2: Take ownership of tree1's children for modification
         let tree1_children = mem::take(&mut tree1.children);
@@ -211,7 +214,7 @@ impl MergeImpl {
         // descendants, so the singleton must stay marked as a duplicate.
         let d_parent = metric.distance(&tree1.point, &tree2.point);
         let tree2_singleton = Box::new(Node {
-            point: tree2.point,
+            point: tree2.point.clone(),
             maxdist: 0.0,
             d_parent,
             children: vec![],
@@ -262,6 +265,7 @@ impl MergeImpl {
         metric: &D,
         base: f64,
     ) -> (Vec<Box<Node<T>>>, Vec<Box<Node<T>>>) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut leftovers = Vec::new();
 
         'outer: for covered_child in covered {
@@ -300,6 +304,7 @@ impl MergeImpl {
         metric: &D,
         base: f64,
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Flatten subtree to points
         let points = Self::flatten_subtree(subtree);
 
@@ -319,12 +324,12 @@ impl MergeImpl {
     fn flatten_subtree<T: Clone>(node: Box<Node<T>>) -> Vec<T> {
         let mut points = Vec::new();
         let mut stack = vec![node];
-        while let Some(n) = stack.pop() {
-            let n = *n;
+        while let Some(mut n) = stack.pop() {
             if !n.is_duplicate {
-                points.push(n.point);
+                points.push(n.point.clone());
             }
-            stack.extend(n.children);
+            // Reverse so children are visited in order (pre-order, as before).
+            stack.extend(std::mem::take(&mut n.children).into_iter().rev());
         }
         points
     }
@@ -338,6 +343,7 @@ impl MergeImpl {
         metric: &D,
         base: f64,
     ) -> Box<Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         let dist = metric.distance(&tree.point, &point);
         let tree_level = tree.level;
 

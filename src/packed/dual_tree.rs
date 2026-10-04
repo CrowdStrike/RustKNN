@@ -76,6 +76,7 @@ fn halfsort<T>(slice: &mut [T], cmp: impl Fn(&T, &T) -> std::cmp::Ordering) {
 struct RefChildData {
     maxdist: f64,
     d_qp_rc: f64,   // distance from query point to this ref child
+    qp_rc_exact: bool, // false: d_qp_rc is only a lower bound (early exit)
     d_rp_rc: f64,    // distance from ref parent to this ref child (d_parent)
 }
 
@@ -84,6 +85,7 @@ struct RefChildData {
 #[derive(Clone, Copy)]
 struct QueryChildData {
     d_qc_rp: f64,   // distance from this query child to ref parent
+    qc_rp_exact: bool, // false: d_qc_rp is only a lower bound (early exit)
     d_qp_qc: f64,   // distance from query parent to this query child (d_parent)
 }
 
@@ -134,6 +136,7 @@ impl PackedDualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let ref_node = packed.node(ref_idx);
 
         // Step 1: Base case using pre-resolved index (no HashMap)
@@ -146,7 +149,11 @@ impl PackedDualTreeTraversal {
             None => {
                 let ub = bound + query_node.maxdist + ref_node.maxdist;
                 let d = rules.metric.distance_with_bound(&query_node.point, &ref_node.point, ub);
-                rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                }
                 d
             }
         };
@@ -268,15 +275,18 @@ impl PackedDualTreeTraversal {
                 for (i, &rc_idx) in ref_children.iter().enumerate() {
                     let rc = packed.node(rc_idx);
                     // Self-child optimization: reuse parent distance when d_parent == 0.0
-                    let d = if rc.d_parent == 0.0 {
-                        dist // d(qp, rp) == d(qp, rc) for self-child
+                    // `dist` is exact here: an early-exited pair would have been pruned.
+                    let (d, exact, lower) = if rc.d_parent == 0.0 {
+                        (dist, true, dist) // d(qp, rp) == d(qp, rc) for self-child
                     } else {
                         let ub = qp_kth + rc.maxdist;
-                        rules.metric.distance_with_bound(&query_node.point, &rc.point, ub)
+                        let d = rules.metric.distance_with_bound(&query_node.point, &rc.point, ub);
+                        (d, d <= ub, if d <= ub { d } else { ub })
                     };
                     ref_data.push(RefChildData {
                         maxdist: rc.maxdist,
-                        d_qp_rc: d,
+                        d_qp_rc: lower,
+                        qp_rc_exact: exact,
                         d_rp_rc: rc.d_parent,
                     });
                     let child_dmin = d - rc.maxdist;
@@ -307,14 +317,16 @@ impl PackedDualTreeTraversal {
                 let mut query_scored: ScoredVec = SmallVec::new();
                 for (i, qc) in q_children.iter().enumerate() {
                     // Self-child optimization: reuse parent distance when d_parent == 0.0
-                    let d = if qc.d_parent == 0.0 {
-                        dist // d(qp, rp) == d(qc, rp) for self-child
+                    let (d, exact, lower) = if qc.d_parent == 0.0 {
+                        (dist, true, dist) // d(qp, rp) == d(qc, rp) for self-child
                     } else {
                         let ub = qc_bounds[i] + qc.maxdist;
-                        rules.metric.distance_with_bound(&qc.point, &ref_node.point, ub)
+                        let d = rules.metric.distance_with_bound(&qc.point, &ref_node.point, ub);
+                        (d, d <= ub, if d <= ub { d } else { ub })
                     };
                     query_data.push(QueryChildData {
-                        d_qc_rp: d,
+                        d_qc_rp: lower,
+                        qc_rp_exact: exact,
                         d_qp_qc: qc.d_parent,
                     });
                     let child_dmin = d - qc.maxdist;
@@ -350,7 +362,12 @@ impl PackedDualTreeTraversal {
                     let qc_bound = qc_bounds[qi];
                     for (ri, &rc_idx) in ref_children.iter().enumerate() {
                         // Triangle inequality lower bounds (avoid expensive metric call)
-                        let lb1 = (query_data[qi].d_qp_qc - ref_data[ri].d_qp_rc).max(0.0); // pivot = qp
+                        // lb1 needs d(qp, rc) exactly; lb2 only needs a lower bound on d(qc, rp).
+                        let lb1 = if ref_data[ri].qp_rc_exact {
+                            (query_data[qi].d_qp_qc - ref_data[ri].d_qp_rc).max(0.0) // pivot = qp
+                        } else {
+                            0.0
+                        };
                         let lb2 = (query_data[qi].d_qc_rp - ref_data[ri].d_rp_rc).max(0.0); // pivot = rp
                         let lb = lb1.max(lb2);
                         let lb_dmin = lb - qc.maxdist - ref_data[ri].maxdist;
@@ -361,13 +378,26 @@ impl PackedDualTreeTraversal {
                         // Self-child optimization: if rc is a self-child, d(qc, rc) == d(qc, rp);
                         // if qc is a self-child, d(qc, rc) == d(qp, rc). Both already computed.
                         let rc = packed.node(rc_idx);
-                        let d = if rc.d_parent == 0.0 {
-                            query_data[qi].d_qc_rp
+                        // Reuse an exact distance; an early-exited value is only a lower bound, so
+                        // prune on it or compute the distance.
+                        let reuse = if rc.d_parent == 0.0 {
+                            Some((query_data[qi].d_qc_rp, query_data[qi].qc_rp_exact))
                         } else if qc.d_parent == 0.0 {
-                            ref_data[ri].d_qp_rc
+                            Some((ref_data[ri].d_qp_rc, ref_data[ri].qp_rc_exact))
                         } else {
-                            let ub = qc_bound + qc.maxdist + ref_data[ri].maxdist;
-                            rules.metric.distance_with_bound(&qc.point, &rc.point, ub)
+                            None
+                        };
+                        let d = match reuse {
+                            Some((d, true)) => d,
+                            Some((lower, false)) if lower - qc.maxdist - ref_data[ri].maxdist > qc_bound => continue,
+                            _ => {
+                                let ub = qc_bound + qc.maxdist + ref_data[ri].maxdist;
+                                let d = rules.metric.distance_with_bound(&qc.point, &rc.point, ub);
+                                if d > ub {
+                                    continue; // early exit: the pair is pruned
+                                }
+                                d
+                            }
                         };
                         let pair_dmin = d - qc.maxdist - ref_data[ri].maxdist;
                         if pair_dmin <= qc_bound {
@@ -408,6 +438,7 @@ impl PackedDualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let ref_node = packed.node(ref_idx);
 
         let kth = rules.kth_distance_by_idx(q_idx);
@@ -419,7 +450,11 @@ impl PackedDualTreeTraversal {
             None => {
                 let ub = kth + ref_node.maxdist;
                 let d = rules.metric.distance_with_bound(query_point, &ref_node.point, ub);
-                rules.base_case_by_idx(query_point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(query_point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                }
                 d
             }
         };
@@ -481,6 +516,7 @@ impl PackedDualTreeTraversal {
         precomputed_dist: Option<f64>,
         rules: &mut KnnRules<'a, T, D>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let ref_node = packed.node(ref_idx);
 
         let bound = rules.state.bound_with_idx(q_idx).min(parent_bound);
@@ -492,7 +528,11 @@ impl PackedDualTreeTraversal {
             None => {
                 let ub = bound + query_node.maxdist;
                 let d = rules.metric.distance_with_bound(&query_node.point, &ref_node.point, ub);
-                rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                // An early exit returns some value > ub, not the distance; only an
+                // exact distance may be recorded. A pair with d > ub is pruned below.
+                if d <= ub {
+                    rules.base_case_by_idx(&query_node.point, q_idx, &ref_node.point, ref_node.is_duplicate, d);
+                }
                 d
             }
         };

@@ -72,6 +72,6 @@ pub(crate) mod node;
 pub(crate) mod tree;
 mod dual_tree;
 pub(crate) mod dual_tree_packed;
-pub mod pack;
+pub(crate) mod pack;
 
 pub use tree::PackedCoverTree;

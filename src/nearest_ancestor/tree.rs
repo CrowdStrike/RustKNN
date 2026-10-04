@@ -61,7 +61,17 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
     }
 
     /// Inserts a point into the cover tree using subtree reattachment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tree is too deep for the recursion stack budget
+    /// ([`RECURSION_STACK_BUDGET`](crate::RECURSION_STACK_BUDGET)). Rebalancing moves
+    /// subtrees out of the tree while it works, so after such a panic the tree is left
+    /// empty (rather than inconsistent).
     pub fn insert(&mut self, point: T) {
+        // Rebalancing takes ownership of the root; if it panics partway, the tree must
+        // not keep a size that no longer matches its (dropped) nodes.
+        let size = std::mem::replace(&mut self.size, 0);
         self.root = match self.root.take() {
             None => {
                 Some(Box::new(Node::new(point, 0, false)))
@@ -70,7 +80,7 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
                 Some(InsertImpl::insert_internal(root, point, &self.metric, self.base))
             }
         };
-        self.size += 1;
+        self.size = size + 1;
     }
 
     /// Recomputes exact maxdist for all nodes in the tree.
@@ -462,6 +472,7 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
 
     /// Recursive helper for exact maxdist computation.
     fn recompute_maxdist_recursive(node: &mut Node<T>, metric: &D) -> f64 {
+        let _guard = crate::core::utils::StackGuard::enter();
         if node.children.is_empty() {
             node.maxdist = 0.0;
             return 0.0;
@@ -510,6 +521,7 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
         metric: &D,
         current_max: f64
     ) -> f64 {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut max_dist = metric.distance(&ancestor.point, &subtree_root.point);
 
         for child in &subtree_root.children {

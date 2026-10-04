@@ -56,6 +56,7 @@ impl InsertImpl {
         metric: &D,
         base: f64,
     ) -> *const T {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Calculate distance from parent to point (we'll need it)
         let dist = metric.distance(&parent.point, &point);
 

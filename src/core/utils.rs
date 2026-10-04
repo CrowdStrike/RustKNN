@@ -3,6 +3,64 @@
 //! This module contains utility functions shared between both cover tree variants.
 
 use crate::node::Node;
+use std::cell::Cell;
+
+/// Stack space that recursive tree operations may use, in bytes, measured from the
+/// outermost guarded call on each thread.
+///
+/// Every recursive traversal (queries, construction, merging, packing) recurses once per
+/// tree level. Trees built from data spanning many orders of magnitude, or merged across
+/// very different scales, can be thousands of levels deep, enough to overflow a 2 MiB
+/// thread stack (the default for spawned and Rayon threads), which aborts the process.
+/// Instead, such operations panic with a clear message once they have used this much
+/// stack. Typical data stays well inside the budget: in release builds, the deepest tree
+/// in the paper's benchmark datasets (153 levels) runs every query mode in under half
+/// of it. Debug builds have larger stack frames and reach the limit sooner.
+pub const RECURSION_STACK_BUDGET: usize = 1 << 20;
+
+thread_local! {
+    /// (nesting depth of guarded calls, stack address at the outermost guarded call)
+    static RECURSION: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+/// RAII guard placed at the top of every recursive function.
+///
+/// `enter` panics, before any work is done at that level, if the recursion has already
+/// used more than [`RECURSION_STACK_BUDGET`] bytes of stack on this thread. The guard
+/// restores the nesting count when dropped, including during unwinding.
+pub(crate) struct StackGuard;
+
+impl StackGuard {
+    #[inline(always)]
+    pub(crate) fn enter() -> StackGuard {
+        // The address of a local approximates the current stack pointer.
+        let marker = 0u8;
+        let sp = std::ptr::addr_of!(marker) as usize;
+        RECURSION.with(|c| {
+            let (depth, base) = c.get();
+            let base = if depth == 0 { sp } else { base };
+            if base.abs_diff(sp) > RECURSION_STACK_BUDGET {
+                panic!(
+                    "cover tree operation exceeded its {} KiB recursion stack budget: the tree \
+                     is too deep (the data spans too many orders of magnitude for this base)",
+                    RECURSION_STACK_BUDGET >> 10
+                );
+            }
+            c.set((depth + 1, base));
+        });
+        StackGuard
+    }
+}
+
+impl Drop for StackGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        RECURSION.with(|c| {
+            let (depth, base) = c.get();
+            c.set((depth - 1, base));
+        });
+    }
+}
 
 /// Smallest accepted cover tree base.
 ///
@@ -89,10 +147,11 @@ pub(crate) fn root_level_adjustment(new_level: i32, old_level: i32) -> i32 {
         .expect("cover tree level adjustment overflowed i32")
 }
 
-/// Recursively adjusts the level of a node and all its descendants.
+/// Adjusts the level of a node and all its descendants.
 ///
 /// This is used during level raising when a new point is too far from the current root,
-/// or when aligning tree levels during merge operations.
+/// or when aligning tree levels during merge operations. Iterative, so a deep tree is
+/// never left partially adjusted.
 ///
 /// # Arguments
 ///
@@ -109,11 +168,12 @@ pub(crate) fn root_level_adjustment(new_level: i32, old_level: i32) -> i32 {
 /// utils::adjust_levels(&mut node, -1);
 /// ```
 pub(crate) fn adjust_levels<T: Clone>(node: &mut Node<T>, adjustment: i32) {
-    node.level = node
-        .level
-        .checked_add(adjustment)
-        .expect("cover tree level overflowed i32");
-    for child in &mut node.children {
-        adjust_levels(child, adjustment);
+    let mut stack: Vec<&mut Node<T>> = vec![node];
+    while let Some(n) = stack.pop() {
+        n.level = n
+            .level
+            .checked_add(adjustment)
+            .expect("cover tree level overflowed i32");
+        stack.extend(n.children.iter_mut().map(|c| &mut **c));
     }
 }

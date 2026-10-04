@@ -101,7 +101,6 @@ pub struct TreeStats {
 /// let covdist = node.covdist(1.3);
 /// assert!((covdist - 1.3_f64.powi(3)).abs() < 1e-10);
 /// ```
-#[derive(Debug)]
 pub struct Node<T: Clone> {
     // --- HOT fields: accessed together during queries ---
 
@@ -160,6 +159,31 @@ pub struct Node<T: Clone> {
     ///
     /// This field is set internally by tree operations and should not be modified by users.
     pub is_duplicate: bool,
+}
+
+impl<T: Clone> Drop for Node<T> {
+    /// Frees the subtree iteratively. The compiler-generated drop would recurse once per
+    /// level and could overflow the stack on a very deep tree.
+    fn drop(&mut self) {
+        let mut stack = std::mem::take(&mut self.children);
+        while let Some(mut child) = stack.pop() {
+            stack.append(&mut child.children);
+        }
+    }
+}
+
+impl<T: Clone + std::fmt::Debug> std::fmt::Debug for Node<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _guard = crate::core::utils::StackGuard::enter();
+        f.debug_struct("Node")
+            .field("point", &self.point)
+            .field("maxdist", &self.maxdist)
+            .field("d_parent", &self.d_parent)
+            .field("children", &self.children)
+            .field("level", &self.level)
+            .field("is_duplicate", &self.is_duplicate)
+            .finish()
+    }
 }
 
 impl<T: Clone> Node<T> {
