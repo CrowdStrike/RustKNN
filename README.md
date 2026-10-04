@@ -131,6 +131,9 @@ These limits turn inputs that would otherwise hang or crash the process into ord
   gets close: in release builds, the deepest tree in the paper's benchmark datasets (covtype
   built in parallel at base 1.1, 153 levels) runs every query mode in under half the
   budget. Debug builds have larger stack frames, so they reach the limit sooner.
+  The budget is measured from the first recursive call, so it only protects threads with
+  more than 1 MiB of free stack. Run deep-tree workloads on a thread with at least 2 MiB
+  of stack, not on a 1 MiB thread such as the Windows main thread.
   If a nearest-ancestor insert hits the limit, the tree is left empty.
 - **`k`:** any `k` is accepted, including `usize::MAX`. Memory grows with the number of
   neighbors actually found, not with `k`.

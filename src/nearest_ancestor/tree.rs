@@ -466,6 +466,9 @@ impl<T: Clone, D: Distance<T>> NACoverTree<T, D> {
         // The merge process uses triangle inequality (approximation), so we need
         // to compute exact maxdist values for optimal query performance
         merged_tree.recompute_maxdist();
+        // Merging moves children under new parents, so cached d_parent values are stale
+        // and would make the triangle-inequality filters prune true neighbors.
+        merged_tree.recompute_d_parent();
 
         merged_tree
     }

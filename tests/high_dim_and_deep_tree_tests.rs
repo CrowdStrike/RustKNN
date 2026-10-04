@@ -165,45 +165,84 @@ fn depth(n: &Node<P>) -> usize {
 }
 
 /// Runs `f` on a 2 MiB thread and reports whether it completed (`true`) or panicked
-/// (`false`). A stack overflow would abort the whole test process instead.
+/// (`false`). A stack overflow would abort the whole test process instead. A panic must
+/// be one of the library's documented refusals, not an unrelated failure.
 fn on_2mib<F: FnOnce() + Send + 'static>(f: F) -> bool {
-    std::thread::Builder::new()
+    let r = std::thread::Builder::new()
         .stack_size(2 << 20)
-        .spawn(move || catch_unwind(AssertUnwindSafe(f)).is_ok())
+        .spawn(move || catch_unwind(AssertUnwindSafe(f)))
         .unwrap()
         .join()
-        .unwrap()
+        .unwrap();
+    match r {
+        Ok(()) => true,
+        Err(e) => {
+            let msg = e
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| e.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(
+                msg.contains("recursion stack budget") || msg.contains("cannot merge cover trees"),
+                "unexpected panic: {msg}"
+            );
+            false
+        }
+    }
 }
 
 type Tree = SimplifiedCoverTree<P, EuclideanDistance>;
-type Op = fn(Tree);
+type Op = fn(Tree, Tree);
 
-/// Every query and maintenance operation, each run on a fresh tree from `build` on its
-/// own 2 MiB thread. Returns whether each completed (`false` = caught panic).
+fn qs() -> Vec<P> {
+    (0..20).map(|i| vec![i as f64 * 0.05]).collect()
+}
+
+/// Every query and maintenance operation, each run on its own 2 MiB thread with two fresh
+/// trees from `build` (the second is the query tree or merge partner, so dual-tree queries
+/// and merges are deep on both sides). Returns whether each completed (`false` = caught
+/// panic).
 fn exercise(build: fn() -> Tree) -> Vec<(&'static str, bool)> {
-    let ops: [(&'static str, Op); 10] = [
-        ("find_nearest", |t| { t.find_nearest(&vec![0.2]); }),
-        ("find_k_nearest", |t| { t.find_k_nearest(&vec![0.2], 2); }),
-        ("find_k_nearest_batch", |t| { t.find_k_nearest_batch(&vec![vec![0.2]; 20], 2); }),
-        ("find_k_nearest_self", |t| { t.find_k_nearest_self(2); }),
-        ("find_k_nearest_batch_single_self", |t| { t.find_k_nearest_batch_single_self(2); }),
-        ("recompute", |mut t| { t.recompute_maxdist(); t.recompute_all(); }),
-        ("pack_and_query", |t| {
+    let ops: [(&'static str, Op); 16] = [
+        ("find_nearest", |t, _| { t.find_nearest(&vec![0.2]); }),
+        ("find_k_nearest", |t, _| { t.find_k_nearest(&vec![0.2], 2); }),
+        ("find_k_nearest_batch", |t, _| { t.find_k_nearest_batch(&qs(), 2); }),
+        ("find_k_nearest_dual", |t, o| { t.find_k_nearest_dual(&o, 2); }),
+        ("find_k_nearest_self", |t, _| { t.find_k_nearest_self(2); }),
+        ("instrumented", |t, _| {
+            t.find_k_nearest_batch_instrumented(&qs(), 2);
+            t.find_k_nearest_self_instrumented(2);
+        }),
+        ("find_k_nearest_batch_single_self", |t, _| { t.find_k_nearest_batch_single_self(2); }),
+        ("recompute", |mut t, _| { t.recompute_maxdist(); t.recompute_all(); }),
+        ("d_parent_and_sort", |mut t, _| { t.recompute_d_parent(); t.sort_children_by_distance(); }),
+        ("pack_and_query", |t, _| {
             let p = t.pack();
+            p.find_nearest(&vec![0.2]);
             p.find_k_nearest(&vec![0.2], 2);
             p.find_k_nearest_self(2);
             p.find_k_nearest_batch_single_self(2);
         }),
-        ("merge", |t| {
+        ("packed_batch_queries", |t, o| {
+            let p = t.pack();
+            p.find_k_nearest_batch(&qs(), 2);
+            p.find_k_nearest_dual(&o, 2);
+            p.find_k_nearest_batch_single(&qs(), 2);
+            p.find_k_nearest_batch_dfs_instrumented(&qs(), 2);
+            p.find_k_nearest_self_instrumented(2);
+        }),
+        ("merge", |t, _| {
             let mut o = SimplifiedCoverTree::new(EuclideanDistance, 1.3);
             o.insert(vec![0.3]);
             t.merge(o).len();
         }),
-        ("debug_format", |t| { let _ = format!("{:?}", t.root_node()); }),
-        ("drop", |t| drop(t)),
+        ("merge_two_deep_trees", |t, o| { t.merge(o).len(); }),
+        ("debug_format", |t, _| { let _ = format!("{:?}", t.root_node()); }),
+        ("drop", |t, o| { drop(t); drop(o); }),
+        ("tree_stats", |t, _| { t.tree_stats(); }),
     ];
     ops.iter()
-        .map(|&(name, op)| (name, on_2mib(move || op(build()))))
+        .map(|&(name, op)| (name, on_2mib(move || op(build(), build()))))
         .collect()
 }
 
@@ -269,6 +308,41 @@ fn ordinary_trees_are_within_the_recursion_budget() {
         assert!(ok, "{name} panicked on an ordinary tree");
     }
 }
+fn geometric_na_tree() -> NACoverTree<P, EuclideanDistance> {
+    let mut t = NACoverTree::new(EuclideanDistance, 1.3);
+    let mut x = 1.0;
+    t.insert(vec![0.0]);
+    for _ in 0..1500 {
+        t.insert(vec![x]);
+        x /= 1.3;
+    }
+    t
+}
+
+/// The nearest-ancestor tree's own queries and maintenance on a deep tree.
+#[test]
+fn deep_nearest_ancestor_tree_never_aborts() {
+    type NaOp = fn(NACoverTree<P, EuclideanDistance>, NACoverTree<P, EuclideanDistance>);
+    // Building may itself exceed the recursion budget in debug builds.
+    if !on_2mib(|| assert!(depth(geometric_na_tree().root_node().unwrap()) > 500)) {
+        return;
+    }
+    let ops: [NaOp; 9] = [
+        |t, _| { t.find_nearest(&vec![0.2]); },
+        |t, _| { t.find_k_nearest(&vec![0.2], 2); },
+        |t, _| { t.find_k_nearest_batch(&qs(), 2); },
+        |t, o| { t.find_k_nearest_dual(&o, 2); },
+        |t, _| { t.find_k_nearest_self(2); },
+        |mut t, _| t.recompute_maxdist(),
+        |t, _| { t.into_simplified().find_k_nearest_self(2); },
+        |t, o| { t.merge(o).find_k_nearest(&vec![0.2], 2); },
+        |t, o| { drop(t); drop(o); },
+    ];
+    for op in ops {
+        let _ = on_2mib(move || op(geometric_na_tree(), geometric_na_tree()));
+    }
+}
+
 /// If a nearest-ancestor insert exceeds the recursion budget, the tree is left empty and
 /// consistent, and stays usable.
 #[test]
