@@ -61,6 +61,7 @@ impl KnnImpl {
         T: Clone,
         D: Distance<T>,
     {
+        let _guard = crate::core::utils::StackGuard::enter();
         // 1. Compute distance to this node's point
         let node_dist = metric.distance(&node.point, query);
 

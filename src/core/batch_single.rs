@@ -277,6 +277,7 @@ where
         mut pending: usize,
         mut bound: Bound,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let (q, r, metric) = (self.q, self.r, self.metric);
         let x = q.point(qn);
         let mut as_point = q.num_children(qn) == 0;
@@ -354,6 +355,7 @@ where
         cur: usize,
         bound: &Bound,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let (q, r, metric) = (self.q, self.r, self.metric);
         let x = q.point(qn);
         // A child's k-th neighbor is within `parent_kth + d(parent, child)`: the

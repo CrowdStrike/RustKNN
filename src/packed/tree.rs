@@ -348,6 +348,7 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
         best: &mut &'a T,
         best_dist: &mut f64,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let node = &self.nodes[node_idx];
 
         // Check if this node is better
@@ -481,6 +482,7 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
         query: &T,
         state: &mut crate::knn::KnnState<'a, T>,
     ) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let node = &self.nodes[node_idx];
 
         // 1. Check this node as candidate (skip algorithm duplicates)
@@ -1102,6 +1104,7 @@ impl<T: Clone, D: Distance<T>> PackedCoverTree<T, D> {
 
     /// Recursively unpack a subtree rooted at `idx` into a Node<T> tree.
     fn unpack_subtree(&self, idx: usize) -> Box<crate::node::Node<T>> {
+        let _guard = crate::core::utils::StackGuard::enter();
         let packed = &self.nodes[idx];
         let mut node = Box::new(crate::node::Node::new(
             packed.point.clone(),

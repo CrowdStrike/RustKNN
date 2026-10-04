@@ -390,6 +390,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     /// 3. Compute exact maxdist using branch-and-bound
     /// 4. Sort children by d_parent (ascending) for optimal pruning order
     fn recompute_all_recursive(node: &mut Node<T>, metric: &D) -> f64 {
+        let _guard = crate::core::utils::StackGuard::enter();
         if node.children.is_empty() {
             node.maxdist = 0.0;
             return 0.0;
@@ -470,6 +471,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     /// valid (if not tight) bound by the triangle inequality, at no extra distance cost.
     /// Merging can move subtrees, which leaves the old maxdist values unsound.
     fn recompute_d_parent_recursive(node: &mut Node<T>, metric: &D) {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut bound = 0.0_f64;
         for child in &mut node.children {
             child.d_parent = metric.distance(&node.point, &child.point);
@@ -495,6 +497,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
     }
 
     fn sort_children_recursive(node: &mut Node<T>) {
+        let _guard = crate::core::utils::StackGuard::enter();
         node.children.sort_by(|a, b| a.d_parent.total_cmp(&b.d_parent));
         for child in &mut node.children {
             Self::sort_children_recursive(child);
@@ -503,6 +506,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
 
     /// Recursive helper for exact maxdist computation.
     fn recompute_maxdist_recursive(node: &mut Node<T>, metric: &D) -> f64 {
+        let _guard = crate::core::utils::StackGuard::enter();
         // Base case: leaf nodes have no descendants
         if node.children.is_empty() {
             node.maxdist = 0.0;
@@ -552,6 +556,7 @@ impl<T: Clone, D: Distance<T>> SimplifiedCoverTree<T, D> {
         metric: &D,
         current_max: f64
     ) -> f64 {
+        let _guard = crate::core::utils::StackGuard::enter();
         let mut max_dist = metric.distance(&ancestor.point, &subtree_root.point);
 
         for child in &subtree_root.children {
