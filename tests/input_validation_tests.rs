@@ -1,4 +1,4 @@
-//! Regression tests for caller-supplied parameters: the tree `base` and the
+//! Tests for caller-supplied parameters: the tree `base` and the
 //! neighbor count `k`. Invalid values must fail with a catchable panic (for `base`)
 //! or be handled gracefully (for `k`), never hang or abort the process.
 
@@ -105,10 +105,9 @@ fn min_base_and_default_base_are_accepted() {
     }
 }
 
-/// Reported proof of concept: a base just below 1 used to overflow the level
-/// arithmetic and leave the batch single-tree query spinning.
+/// A base just below 1 would overflow the level arithmetic; it must be rejected.
 #[test]
-fn reported_poc_base_below_one_is_rejected() {
+fn base_just_below_one_is_rejected() {
     expect_panic(
         || {
             let mut t = SimplifiedCoverTree::new(Abs, 1.0 - 1e-10);
@@ -120,10 +119,10 @@ fn reported_poc_base_below_one_is_rejected() {
     );
 }
 
-/// Reported proof of concept: a base just above 1 used to build a
-/// 69,316-node chain in merge() and abort with a stack overflow.
+/// A base just above 1 would make merge() bridge a level gap of tens of thousands of
+/// levels; it must be rejected.
 #[test]
-fn reported_poc_merge_with_base_just_above_one_is_rejected() {
+fn merge_with_base_just_above_one_is_rejected() {
     on_small_stack(|| {
         expect_panic(
             || {
@@ -140,10 +139,9 @@ fn reported_poc_merge_with_base_just_above_one_is_rejected() {
     });
 }
 
-/// Reported proof of concept: the same abort, reached through the
-/// parallel builder without an explicit merge() call.
+/// The same base, reached through the parallel builder (which merges internally).
 #[test]
-fn reported_poc_parallel_with_base_just_above_one_is_rejected() {
+fn parallel_with_base_just_above_one_is_rejected() {
     on_small_stack(|| {
         expect_panic(
             || build_parallel_simplified(Abs, 1.0 + 1e-5, vec![0.0, 2.0, 100.0], Some(2)).len(),

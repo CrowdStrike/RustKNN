@@ -107,7 +107,7 @@ fn check_all_modes<M: Distance<P> + Clone>(m: M, pts: &[P], qs: &[P], k: usize, 
     assert_eq!(rows(&p.find_k_nearest_batch_single(qs, k)), want, "{what}: packed batch single held-out");
 }
 
-/// The reported case: Euclidean, 16 dimensions, n = 1000, k = 10.
+/// Euclidean at 16, 34, 64 and 784 dimensions, where the early-exit kernel engages.
 #[test]
 fn early_exit_dimensions_euclidean() {
     for &(seed, n, dim) in &[(7u64, 1000usize, 16usize), (11, 600, 34), (13, 400, 64), (17, 150, 784)] {
@@ -273,9 +273,9 @@ fn ordinary_tree() -> Tree {
     t
 }
 
-/// The reported reproduction: points 0, 1, 0.5 and 1e154 built in parallel give a tree
-/// over a thousand levels deep whose self-query used to abort on a 2 MiB thread. Every
-/// operation must now complete or panic; reaching the end of the test means none aborted.
+/// Points 0, 1, 0.5 and 1e154 built in parallel give a tree over a thousand levels deep.
+/// On a 2 MiB thread every operation must complete or panic; reaching the end of the test
+/// means none aborted.
 #[test]
 fn deep_tree_from_parallel_outlier_never_aborts() {
     // Building may itself exceed the recursion budget in debug builds (a catchable
