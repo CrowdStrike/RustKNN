@@ -4,12 +4,11 @@
 //! k-NN implementation. Each test is designed to trigger a specific failure scenario
 //! and verifies results against brute-force ground truth.
 //!
-//! ## Likely Bug Targeted
+//! ## Focus
 //!
-//! `is_duplicate` reference nodes are NOT skipped in the dual-tree `base_case`
-//! (`knn_rules.rs`), while single-tree k-NN (`knn_impl.rs:66`) explicitly skips them.
-//! On merged trees (which have `is_duplicate` nodes), dual-tree k-NN may return
-//! cloned points as spurious neighbors.
+//! Merged trees contain `is_duplicate` structural nodes (clones of a parent's point).
+//! Both single-tree and dual-tree k-NN must skip them, so they never appear as
+//! spurious neighbors.
 
 use rustknn::{Distance, SimplifiedCoverTree, NACoverTree};
 
@@ -218,13 +217,13 @@ impl SimpleRng {
 }
 
 // ============================================================================
-// Tier 1: Most Likely to Expose Bugs
+// Tier 1: Merged trees and duplicate structural nodes
 // ============================================================================
 
 /// Test 1: Self-k-NN on merged tree should NOT return is_duplicate clones as neighbors.
 ///
-/// Failure mode: `is_duplicate` bug — dual-tree self-k-NN on merged tree returns
-/// cloned points at distance 0.0.
+/// Failure mode: dual-tree self-k-NN on a merged tree returns `is_duplicate`
+/// clones at distance 0.0.
 #[test]
 fn test_self_knn_merged_tree_no_duplicate_artifacts() {
     let metric = EuclideanDistance1D;
@@ -306,8 +305,8 @@ fn test_self_knn_merged_tree_no_duplicate_artifacts() {
 
 /// Test 2: Batch k-NN on merged reference tree should not return duplicate-value neighbors.
 ///
-/// Failure mode: `is_duplicate` bug — batch k-NN on merged reference tree returns
-/// algorithm duplicates as extra neighbors.
+/// Failure mode: batch k-NN on a merged reference tree returns `is_duplicate`
+/// clones as extra neighbors.
 #[test]
 fn test_batch_knn_merged_tree_no_duplicate_neighbors() {
     let metric = EuclideanDistance1D;

@@ -250,8 +250,8 @@ fn trees_keep_maxdist_and_d_parent_valid() {
     }
 }
 
-/// Exact duplicates used to chain one level deeper per copy, so a few thousand copies
-/// overflowed the stack in recursive queries.
+/// Many exact copies of one point must form a shallow group, not a chain one level
+/// deeper per copy, so recursive queries stay within the stack.
 #[test]
 fn exact_duplicates_keep_the_tree_shallow() {
     std::thread::Builder::new()

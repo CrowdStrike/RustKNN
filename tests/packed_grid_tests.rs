@@ -1,7 +1,6 @@
-// Regression test for a packed-tree traversal bug. The bug caused:
-// 1. Nodes to be visited multiple times during traversal
-// 2. Duplicate points in k-NN results
-// 3. Missing actual nearest neighbors
+// Packed-tree k-NN on a regular grid, where many distances tie. Checks that the
+// traversal visits each node once, returns no duplicate points, and finds the true
+// nearest neighbors.
 
 use rustknn::simplified::SimplifiedCoverTree;
 use rustknn::distance::Distance;
@@ -29,8 +28,7 @@ impl Distance<Point2D> for EuclideanDistance {
 }
 
 #[test]
-fn test_packed_bug_fix_5x5_grid() {
-    // This is the exact test case from the bug report
+fn test_packed_5x5_grid() {
     // Build 5x5 grid
     let mut tree = SimplifiedCoverTree::new(EuclideanDistance, 1.3);
 
